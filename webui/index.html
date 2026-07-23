@@ -31,6 +31,10 @@
   header .badge.sim { color: var(--warn); border-color: var(--warn); }
   header button.icon { background: none; border: none; color: var(--dim);
     font-size: 20px; padding: 6px; cursor: pointer; }
+  header .car { cursor: pointer; }
+
+  .banner { padding: 8px 14px; font-size: 13px; text-align: center;
+    background: rgba(224,86,75,.15); color: #f0a89f; border-bottom: 1px solid var(--err); }
 
   #log { flex: 1; overflow-y: auto; padding: 16px 12px 6px; display: flex;
     flex-direction: column; gap: 12px; }
@@ -75,13 +79,15 @@
 <div id="app">
   <header>
     <span class="logo">OBDAI</span>
-    <div class="car">
+    <div class="car" id="carBox" title="Tap to correct the vehicle / VIN">
       <div class="name" id="carName">…</div>
       <div class="sub" id="carSub"></div>
     </div>
     <span class="badge" id="prov"></span>
     <button class="icon" id="newBtn" title="New session">✎</button>
   </header>
+
+  <div id="banner" class="banner" hidden></div>
 
   <div id="log">
     <div class="note" id="hello">Connecting…</div>
@@ -91,7 +97,7 @@
     <div id="thumbs"></div>
     <div class="inputrow">
       <button class="btn attach" id="attachBtn" title="Add a photo">📎</button>
-      <input type="file" id="file" accept="image/*" capture="environment" hidden>
+      <input type="file" id="file" accept="image/*" multiple hidden>
       <textarea id="text" rows="1" placeholder="Ask about the car… (attach a photo with 📎)"></textarea>
       <button class="btn send" id="sendBtn" title="Send">➤</button>
     </div>
@@ -124,14 +130,38 @@ function addTools(names){
 async function refreshStatus(){
   const s = await (await fetch('/api/status')).json();
   $('#carName').textContent = s.vehicle;
-  $('#carSub').textContent = s.vin ? ('VIN …' + s.vin.slice(-4)) : 'VIN not read';
-  $('#prov').textContent = s.provider;
-  if(s.simulated){ $('#prov').textContent = s.provider + ' · SIM'; $('#prov').classList.add('sim'); }
+  const bits = [];
+  bits.push(s.vin ? ('VIN …' + s.vin.slice(-4)) : 'VIN not read');
+  if(s.adapter) bits.push(s.adapter);
+  $('#carSub').textContent = bits.join(' · ');
+  $('#prov').textContent = s.provider + (s.simulated ? ' · SIM' : '');
+  $('#prov').classList.toggle('sim', !!s.simulated);
   const hello = $('#hello');
   if(hello) hello.textContent = s.simulated
     ? 'Simulated demo data — not a real car. Ask anything, or tap 📎 to show a photo.'
     : 'Connected. Ask anything, or tap 📎 to show it a part / code / leak.';
 }
+
+function showBanner(msg){
+  const b = $('#banner'); b.textContent = msg; b.hidden = false;
+  clearTimeout(b._t); b._t = setTimeout(()=>{ b.hidden = true; }, 8000);
+}
+
+$('#carBox').onclick = async () => {
+  const cur = $('#carName').textContent;
+  const v = prompt('Correct the vehicle (or leave blank to keep):', cur);
+  if(v === null) return;
+  const vin = prompt('Correct the VIN (17 chars, or leave blank):', '');
+  if(v === null && vin === null) return;
+  const fd = new FormData();
+  if(v && v.trim() && v.trim() !== cur) fd.append('vehicle', v.trim());
+  if(vin && vin.trim()) fd.append('vin', vin.trim());
+  if(![...fd.keys()].length) return;
+  const r = await fetch('/api/vehicle', {method:'POST', body:fd});
+  const j = await r.json();
+  if(j.error){ showBanner(j.error); return; }
+  refreshStatus();
+};
 
 function renderThumbs(){
   thumbs.innerHTML = '';
@@ -158,6 +188,15 @@ $('#file').onchange = async e => {
   }
 };
 
+function parseSSE(block){
+  let event = 'message', data = '';
+  for(const line of block.split('\n')){
+    if(line.startsWith('event:')) event = line.slice(6).trim();
+    else if(line.startsWith('data:')) data += line.slice(5).trim();
+  }
+  return {event, data};
+}
+
 async function send(){
   if(busy) return;
   const text = textEl.value.trim();
@@ -170,12 +209,41 @@ async function send(){
   pending = []; renderThumbs();
 
   const typing = addBubble('assistant', '<span class="typing">reading the car…</span>');
+  let toolsLine = null;                       // created lazily when the first tool fires
+  const seen = [];
   const fd = new FormData(); fd.append('text', text);
   try{
-    const j = await (await fetch('/api/chat',{method:'POST', body:fd})).json();
-    typing.closest('.row').remove();
-    addTools(j.tools);
-    addBubble('assistant', esc(j.reply || '(no reply)'));
+    const resp = await fetch('/api/chat/stream', {method:'POST', body:fd});
+    if(!resp.ok || !resp.body){                // fall back to non-streaming
+      const j = await (await fetch('/api/chat',{method:'POST', body:fd})).json();
+      typing.closest('.row').remove(); addTools(j.tools);
+      addBubble('assistant', esc(j.reply || '(no reply)'));
+    } else {
+      const reader = resp.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      for(;;){
+        const {done, value} = await reader.read();
+        if(done) break;
+        buf += dec.decode(value, {stream:true});
+        let i;
+        while((i = buf.indexOf('\n\n')) >= 0){
+          const {event, data} = parseSSE(buf.slice(0, i)); buf = buf.slice(i+2);
+          if(event === 'tool'){
+            const name = JSON.parse(data); seen.push(name);
+            typing.innerHTML = '<span class="typing">reading the car…</span>';
+            if(!toolsLine){ toolsLine = document.createElement('div'); toolsLine.className='tools';
+              toolsLine.innerHTML = 'reading the car: '; typing.closest('.row').before(toolsLine); }
+            const chip = document.createElement('span'); chip.className='chip';
+            chip.textContent = name; toolsLine.appendChild(chip); scroll();
+          } else if(event === 'reply'){
+            const j = JSON.parse(data);
+            typing.closest('.row').remove();
+            addBubble('assistant', esc(j.reply || '(no reply)'));
+            if(j.error === 'connection') showBanner('Adapter link lost — check the cable/Bluetooth and ignition.');
+          }
+        }
+      }
+    }
   }catch(err){
     typing.innerHTML = '⚠️ ' + esc(''+err);
   }finally{

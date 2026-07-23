@@ -124,3 +124,43 @@ def test_new_session_resets(client):
     assert client.get("/api/status").json()["turns"] == 1
     client.post("/api/new")
     assert client.get("/api/status").json()["turns"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Phase C: adapter label, vehicle correction, streaming
+# --------------------------------------------------------------------------- #
+def test_status_reports_adapter(client):
+    assert client.get("/api/status").json()["adapter"] == "simulated"
+
+
+def test_vehicle_correct_by_description(client):
+    assert client.get("/api/vehicle").json()["vehicle"] == "2010 Honda Accord 2.4"
+    r = client.post("/api/vehicle", data={"vehicle": "2013 VW Golf GTI"}).json()
+    assert r["ok"] and r["vehicle"] == "2013 VW Golf GTI"
+    assert client.get("/api/status").json()["vehicle"] == "2013 VW Golf GTI"
+
+
+def test_vehicle_correct_by_vin_uses_known_map(client):
+    r = client.post("/api/vehicle", data={"vin": "WAUHFAFL9AN064693"}).json()
+    assert r["ok"] and r["vin"] == "WAUHFAFL9AN064693"
+    assert "Audi" in r["vehicle"]          # decoded/identified from the VIN
+
+
+def test_vehicle_rejects_bad_vin(client):
+    r = client.post("/api/vehicle", data={"vin": "TOOSHORT"})
+    assert r.status_code == 400
+    assert "error" in r.json()
+
+
+def test_chat_stream_emits_tool_then_reply(client):
+    client.post("/api/upload", files={"file": ("d.jpg", _jpg_bytes(), "image/jpeg")})
+    body = client.post("/api/chat/stream", data={"text": "what is this?"}).text
+    # the SSE stream carries a live tool event, then the final reply
+    assert "event: tool" in body and "read_current" in body
+    assert "event: reply" in body and "stub reply" in body
+    # attachment was consumed
+    assert client.get("/api/status").json()["pending"] == []
+
+
+def test_chat_stream_rejects_empty(client):
+    assert client.post("/api/chat/stream", data={"text": ""}).status_code == 400
