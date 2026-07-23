@@ -47,6 +47,10 @@
   .user .bubble { background: var(--user); border-bottom-right-radius: 4px; }
   .bubble img { max-width: 100%; border-radius: 10px; margin: 6px 0 2px;
     display: block; }
+  .bubble a { color: var(--accent); text-decoration: underline; word-break: break-all; }
+  .bubble strong { color: #fff; font-weight: 700; }
+  .bubble code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 5px;
+    font-family: ui-monospace, Menlo, monospace; font-size: .9em; }
   .tools { font-size: 12px; color: var(--dim); margin: -4px 4px 0; }
   .tools .chip { display: inline-block; background: var(--tool); color: #b8c4a8;
     border-radius: 999px; padding: 1px 8px; margin: 2px 4px 0 0; font-size: 11px; }
@@ -112,6 +116,21 @@ let busy = false;
 
 function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function scroll(){ log.scrollTop = log.scrollHeight; }
+
+// Minimal, safe markdown for assistant replies: escape first (no HTML injection),
+// then add links / bold / italic / code / bullets. Links open in a new tab.
+function mdToHtml(s){
+  let h = String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  h = h.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        (m,t,u)=>`<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
+  h = h.replace(/(^|[\s(])(https?:\/\/[^\s<]+)/g,
+        (m,pre,u)=>`${pre}<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/^\s*[-*]\s+/gm, '• ');
+  return h;
+}
 
 function addBubble(role, html, imgs){
   const row = document.createElement('div'); row.className = 'row ' + role;
@@ -217,7 +236,7 @@ async function send(){
     if(!resp.ok || !resp.body){                // fall back to non-streaming
       const j = await (await fetch('/api/chat',{method:'POST', body:fd})).json();
       typing.closest('.row').remove(); addTools(j.tools);
-      addBubble('assistant', esc(j.reply || '(no reply)'));
+      addBubble('assistant', mdToHtml(j.reply || '(no reply)'));
     } else {
       const reader = resp.body.getReader(), dec = new TextDecoder();
       let buf = '';
@@ -238,7 +257,7 @@ async function send(){
           } else if(event === 'reply'){
             const j = JSON.parse(data);
             typing.closest('.row').remove();
-            addBubble('assistant', esc(j.reply || '(no reply)'));
+            addBubble('assistant', mdToHtml(j.reply || '(no reply)'));
             if(j.error === 'connection') showBanner('Adapter link lost — check the cable/Bluetooth and ignition.');
           }
         }
