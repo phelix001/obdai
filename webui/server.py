@@ -216,7 +216,7 @@ def build_arg_parser():
     ap.add_argument("--simulate", action="store_true", help="no hardware — demo data")
     ap.add_argument("--sim-car", choices=sorted(obd_diagnose.SIM_CARS), default="audi")
     ap.add_argument("--serial-port", dest="port_dev", default=None,
-                    help="force an adapter port, e.g. /dev/rfcomm0")
+                    help="force an adapter port: /dev/rfcomm0 or tcp:192.168.0.10:35000")
     ap.add_argument("--baud", type=int, default=None)
     ap.add_argument("--history", type=int, default=48)
     return ap

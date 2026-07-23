@@ -551,10 +551,11 @@ def main():
                     help="vehicle description (default: identify it from the car's VIN, "
                          "then confirm at startup)")
     ap.add_argument("--port", default=None,
-                    help="serial port, e.g. /dev/ttyUSB0 or /dev/rfcomm0 "
-                         "(default: auto-detect USB and Bluetooth adapters)")
+                    help="adapter port: a serial device (/dev/ttyUSB0, /dev/rfcomm0) or a "
+                         "WiFi/TCP endpoint (tcp:192.168.0.10:35000) "
+                         "(default: auto-detect USB and Bluetooth)")
     ap.add_argument("--baud", type=int, default=None,
-                    help="baud rate (default: auto-detect)")
+                    help="baud rate (default: auto-detect; ignored for tcp:)")
     ap.add_argument("--simulate", action="store_true", help="run without hardware (demo vehicle)")
     ap.add_argument("--sim-car", choices=sorted(SIM_CARS), default="audi",
                     help="which car the simulator reports (default: audi)")

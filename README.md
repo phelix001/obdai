@@ -68,8 +68,11 @@ powered by the OBD2 port).
 - **Bluetooth (Linux):** pair the adapter once (`bluetoothctl` → `scan on` / `pair` /
   `trust`), then run normally — OBDAI finds a bound `/dev/rfcomm*`, or offers to bind a
   paired adapter for you.
+- **WiFi / TCP:** point it at an adapter that exposes a TCP socket (the common WiFi
+  ELM327s, or any `host:port` bridge): `--port tcp:192.168.0.10:35000`.
 - **Force a specific port:** `--port /dev/rfcomm0`
 - **Adapter not showing up?** Diagnose it: `venv/bin/python obd_connect.py`
+  (`obd_connect.py --port tcp:HOST:PORT` to test a WiFi adapter).
 
 On the first run of a session, OBDAI reads the car's **VIN**, identifies the vehicle,
 and asks you to confirm or correct it — so it never assumes the wrong car.

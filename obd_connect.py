@@ -27,6 +27,8 @@ import subprocess
 import sys
 import time
 
+import obd_transport
+
 try:
     import serial
     from serial.tools import list_ports
@@ -118,14 +120,14 @@ def _classify_open_error(port, err):
 # --------------------------------------------------------------------------- #
 # Probing
 # --------------------------------------------------------------------------- #
-def _read_until_prompt(ser, timeout):
-    """Read until the ELM327 '>' prompt or timeout. Returns whatever arrived."""
+def _read_until_prompt(transport, timeout):
+    """Read from a transport until the ELM327 '>' prompt or timeout. Returns what arrived."""
     buf = ""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        waiting = ser.in_waiting
-        if waiting:
-            buf += ser.read(waiting).decode(errors="ignore")
+        chunk = transport.read_waiting()
+        if chunk:
+            buf += chunk.decode(errors="ignore")
             if ">" in buf:
                 break
         else:
@@ -133,44 +135,72 @@ def _read_until_prompt(ser, timeout):
     return buf
 
 
+def _probe_transport(transport, per_baud_timeout):
+    """Send ATZ/ATI on an open transport and return the banner, or '' if none answered."""
+    transport.reset_input()
+    transport.write(b"\r")
+    time.sleep(0.1)
+    transport.reset_input()
+    transport.write(b"ATZ\r")
+    resp = _read_until_prompt(transport, per_baud_timeout)
+    if not _ELM_BANNER.search(resp):
+        transport.write(b"ATI\r")
+        resp += _read_until_prompt(transport, 1.5)
+    if _ELM_BANNER.search(resp):
+        return " ".join(resp.replace(">", " ").split())
+    return ""
+
+
+def _probe_tcp(port, per_baud_timeout):
+    """Probe a TCP ELM327 endpoint. Returns (None, banner) — baud is meaningless over TCP."""
+    host, tcp_port = obd_transport.parse_tcp(port)
+    try:
+        transport = obd_transport.TcpTransport(host, tcp_port,
+                                               connect_timeout=min(per_baud_timeout, 2.0))
+    except obd_transport.TransportError as e:
+        raise ObdConnectionError(f"could not connect to {port}: {e}", port_level=True)
+    try:
+        banner = _probe_transport(transport, per_baud_timeout)
+    except OSError as e:
+        raise ObdConnectionError(str(e))
+    finally:
+        transport.close()
+    if banner:
+        return None, banner
+    raise ObdConnectionError("no response")
+
+
 def probe_port(port, bauds, per_baud_timeout=2.5):
     """Is there an ELM327 on `port`? Returns (baud, banner) or raises ObdConnectionError.
 
+    `port` is a serial device path, or a `tcp:HOST:PORT` endpoint (WiFi adapter / bridge).
     The exception message says *why* (missing / permission / no answer), which is
     what makes the final error report useful instead of a bare traceback.
     """
+    if obd_transport.parse_tcp(port):
+        return _probe_tcp(port, per_baud_timeout)
+
     if serial is None:
         raise ObdConnectionError("pyserial is not installed — `pip install pyserial`, or use --simulate.")
 
     last_reason = "no response"
     for baud in bauds:
         try:
-            ser = serial.Serial(port, baud, timeout=0.3)
-        except Exception as e:  # SerialException wraps OSError; catch broadly
+            transport = obd_transport.SerialTransport(port, baud, timeout=0.3)
+        except obd_transport.TransportError as e:
             # A port-level problem (missing/permission/busy) won't change with baud.
-            raise ObdConnectionError(_classify_open_error(port, e), port_level=True)
+            # Classify from the underlying serial exception (preserved as __cause__).
+            raise ObdConnectionError(
+                _classify_open_error(port, e.__cause__ or e), port_level=True)
         try:
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
-            ser.write(b"\r")
-            time.sleep(0.1)
-            ser.reset_input_buffer()
-            ser.write(b"ATZ\r")
-            resp = _read_until_prompt(ser, per_baud_timeout)
-            if not _ELM_BANNER.search(resp):
-                ser.write(b"ATI\r")
-                resp += _read_until_prompt(ser, 1.5)
-            if _ELM_BANNER.search(resp):
-                banner = " ".join(resp.replace(">", " ").split())
+            banner = _probe_transport(transport, per_baud_timeout)
+            if banner:
                 return baud, banner
-            last_reason = "garbled response" if resp.strip() else "no response"
+            last_reason = "no response"
         except Exception as e:
             last_reason = str(e)
         finally:
-            try:
-                ser.close()
-            except Exception:
-                pass
+            transport.close()
     raise ObdConnectionError(last_reason)
 
 
@@ -273,13 +303,12 @@ def _ask(prompt):
 
 
 def _bauds_to_try(kind, preferred=None, thorough=False):
+    if kind in ("bluetooth", "wifi"):
+        # SPP / TCP are virtual links — baud is meaningless, one probe is enough.
+        return [preferred] if preferred else [38400 if kind == "bluetooth" else None]
     bauds = []
     if preferred:
         bauds.append(preferred)
-    if kind == "bluetooth":
-        # SPP is a virtual link — the baud is cosmetic, one try is enough.
-        bauds += [b for b in [38400] if b not in bauds]
-        return bauds
     bauds += [b for b in COMMON_BAUDS if b not in bauds]
     if thorough:
         bauds += [b for b in RARE_BAUDS if b not in bauds]
@@ -293,7 +322,8 @@ def find_adapter(port=None, baud=None, interactive=True, verbose=True, probe_tim
     is tried first but other rates are attempted if it does not answer.
     Raises ObdConnectionError with a diagnosis if nothing is found.
     """
-    if serial is None:
+    # A TCP endpoint (WiFi adapter / bridge) needs no pyserial; a serial scan does.
+    if serial is None and not obd_transport.parse_tcp(port or ""):
         raise ObdConnectionError("pyserial is not installed — `pip install pyserial`, or use --simulate.")
 
     def say(msg):
@@ -301,7 +331,8 @@ def find_adapter(port=None, baud=None, interactive=True, verbose=True, probe_tim
             print(msg, flush=True)
 
     if port:
-        kind = "bluetooth" if "rfcomm" in port else "usb"
+        kind = "wifi" if obd_transport.parse_tcp(port) else \
+               ("bluetooth" if "rfcomm" in port else "usb")
         candidates = [{"device": port, "kind": kind, "desc": "specified with --port"}]
     else:
         candidates = list_candidate_ports()
@@ -316,7 +347,9 @@ def find_adapter(port=None, baud=None, interactive=True, verbose=True, probe_tim
                 continue  # SPP ignores baud — the first pass already settled it
             bauds = _bauds_to_try(c["kind"], baud, thorough)
             label = c["device"] + (f" ({c['desc']})" if c["desc"] else "")
-            say(f"  probing {label} at {', '.join(str(b) for b in bauds)} ...")
+            at = " (TCP)" if c["kind"] == "wifi" else \
+                 f" at {', '.join(str(b) for b in bauds)}"
+            say(f"  probing {label}{at} ...")
             try:
                 found_baud, banner = probe_port(c["device"], bauds, probe_timeout)
             except ObdConnectionError as e:
@@ -388,8 +421,9 @@ def connect(port=None, baud=None, interactive=True, verbose=True):
 
     status = ecu_status(reader)
     if verbose:
-        kind = "Bluetooth" if info["kind"] == "bluetooth" else "USB"
-        print(f"Connected: {kind} adapter on {info['port']} @ {info['baud']} baud — {status['text']}")
+        kind = {"bluetooth": "Bluetooth", "wifi": "WiFi/TCP"}.get(info["kind"], "USB")
+        at = f" @ {info['baud']} baud" if info["baud"] else ""
+        print(f"Connected: {kind} adapter on {info['port']}{at} — {status['text']}")
     if not status["ecu_ok"]:
         print("  WARNING: the adapter answers but the ECU does not. Turn the ignition to ON "
               "(engine running for live data) — readings below may come back as 'No Data'.")
@@ -448,7 +482,8 @@ def main():
     except ObdConnectionError as e:
         print(f"\n{e}")
         return 1
-    print(f"\nAdapter ready: {info['port']} @ {info['baud']} baud ({info['kind']})")
+    at = f" @ {info['baud']} baud" if info["baud"] else ""
+    print(f"\nAdapter ready: {info['port']}{at} ({info['kind']})")
     return 0
 
 

@@ -34,6 +34,7 @@ except ImportError:
 
 from obd_display import LiveMonitor
 import obd_connect
+import obd_transport
 import obd_modes
 import obd_history
 import obd_uds
@@ -94,35 +95,36 @@ def _clean(resp):
 
 
 class Elm327Reader:
-    """Talks to a real ELM327 adapter over a serial port.
+    """Talks to a real ELM327 adapter over a byte transport (serial or TCP).
 
-    Survives a dropped link: a USB adapter knocked loose or a Bluetooth link that
-    drops re-opens the same port once before giving up, so a long session does not
-    die on one glitch.
+    The transport (obd_transport) decides *how* bytes move — a USB / Bluetooth serial
+    port, or a TCP socket to a WiFi adapter or on-device bridge — so `port` may be a
+    device path or a `tcp:HOST:PORT` endpoint. Survives a dropped link: it re-opens the
+    same transport once before giving up, so a long session does not die on one glitch.
     """
 
     def __init__(self, port, baud):
-        if serial is None:
-            raise RuntimeError("pyserial not installed — run with --simulate, or `pip install pyserial`.")
         self.port = port
         self.baud = baud
         try:
-            self.ser = serial.Serial(port, baud, timeout=1)
-        except Exception as e:
+            self.transport = obd_transport.make_transport(port, baud)
+        except obd_transport.TransportError as e:
             raise obd_connect.ObdConnectionError(
-                f"could not open {port} at {baud} baud: {e}") from e
+                f"could not open {port}"
+                + (f" at {baud} baud" if baud and not obd_transport.parse_tcp(port) else "")
+                + f": {e}") from e
 
     def _reopen(self):
-        """Re-open the port after a link drop. Returns True if the adapter is back."""
+        """Re-open the transport after a link drop. Returns True if the adapter is back."""
         try:
-            self.ser.close()
+            self.transport.close()
         except Exception:
             pass
         for delay in (0.5, 1.5):
             time.sleep(delay)
             try:
-                self.ser = serial.Serial(self.port, self.baud, timeout=1)
-            except Exception:
+                self.transport = obd_transport.make_transport(self.port, self.baud)
+            except obd_transport.TransportError:
                 continue
             for c in ("ATZ", "ATE0", "ATL0", "ATS0", "ATSP0"):
                 self._cmd_once(c, timeout=2.0)
@@ -130,13 +132,14 @@ class Elm327Reader:
         return False
 
     def _cmd_once(self, command, timeout=2.0):
-        self.ser.reset_input_buffer()
-        self.ser.write((command + "\r").encode())
+        self.transport.reset_input()
+        self.transport.write((command + "\r").encode())
         buffer = ""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.ser.in_waiting:
-                buffer += self.ser.read(self.ser.in_waiting).decode(errors="ignore")
+            chunk = self.transport.read_waiting()
+            if chunk:
+                buffer += chunk.decode(errors="ignore")
                 if ">" in buffer:  # ELM327 finished responding
                     break
             else:
@@ -799,8 +802,9 @@ def main():
     ap = argparse.ArgumentParser(description="Adaptive OBD2 diagnostic assistant")
     ap.add_argument("--vehicle", default=DEFAULT_VEHICLE, help=f"vehicle description (default: {DEFAULT_VEHICLE!r})")
     ap.add_argument("--port", default=None,
-                    help="serial port, e.g. /dev/ttyUSB0 or /dev/rfcomm0 "
-                         "(default: auto-detect USB and Bluetooth adapters)")
+                    help="adapter port: a serial device (/dev/ttyUSB0, /dev/rfcomm0) or a "
+                         "WiFi/TCP endpoint (tcp:192.168.0.10:35000) "
+                         "(default: auto-detect USB and Bluetooth)")
     ap.add_argument("--baud", type=int, default=None,
                     help="baud rate (default: auto-detect, 38400/9600/...)")
     ap.add_argument("--simulate", action="store_true", help="run without hardware using a built-in demo vehicle")
