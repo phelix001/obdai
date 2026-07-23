@@ -5,6 +5,11 @@ pyserial>=3.5             # ELM327 over USB / Bluetooth rfcomm
 python-dotenv>=1.1.1      # .env (ANTHROPIC_API_KEY, ...)
 pillow>=12.3.0            # photo downscale + EXIF rotation for /pic and /snap
 
+# Web UI (webui/server.py — the mobile CarChat interface, works in Termux)
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
+
 # Tests
 pytest>=9.1.1
 

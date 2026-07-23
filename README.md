@@ -113,8 +113,33 @@ guided live capture.
 | `/phone` | pull the newest photo off a USB-attached Android (adb) |
 | `/help` | show all commands |
 
-A bare image path typed in a normal message is attached automatically. (A friendlier,
-tap-to-attach mobile UI is on the roadmap — see below.)
+A bare image path typed in a normal message is attached automatically. (For a
+tap-to-attach experience, use the mobile web UI below.)
+
+### Mobile web UI (phone-friendly)
+
+CarChat also has a **web interface** — chat bubbles, and a 📎 button that opens your
+camera or gallery, so you attach photos with a tap instead of slash commands. It's the
+same engine underneath (same tools, same photo pipeline).
+
+```bash
+./webui.sh --simulate      # try it with no hardware
+./webui.sh                 # real ELM327 (USB-OTG or Bluetooth)
+# then open http://localhost:8000 in your browser
+```
+
+It's built to run **on your phone under [Termux](https://termux.dev/)** so the whole
+thing — adapter, AI, UI — lives on the device you carry to the car:
+
+```bash
+pkg install python
+pip install -r requirements.txt
+python webui/server.py --simulate
+# open http://localhost:8000 in the phone's browser; tap 📎 to add a photo
+```
+
+USB-OTG and Bluetooth adapters both work under Termux. (A packaged APK is a possible
+future step; build artifacts would stay out of this repo.)
 
 **Sessions** save automatically and resume from a picker on startup:
 
@@ -156,9 +181,9 @@ engines; other cars simply skip them. The simulator ships an Audi and a Honda pr
 
 ## Roadmap
 
-- **Android app (APK)** with a touch UI — Bluetooth **and** USB-OTG adapters, and
-  tap-to-attach photos instead of slash commands. (Build artifacts stay out of this
-  repo.)
+- **Packaged Android APK** — the mobile web UI already gives a touch interface with
+  tap-to-attach photos (run it in Termux today); a signed, installable APK wrapper is a
+  possible next step. Build artifacts would stay out of this repo.
 
 ## Privacy & safety
 

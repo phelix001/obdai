@@ -457,60 +457,88 @@ def collect_turn(state):
         return line, attachments
 
 
-def claude_chat(client, model, system, reader, history, interval, messages, persist, state):
+def run_turn(engine, reader, system, history, interval, messages,
+             expected_vin4=None, on_tool=None):
+    """Run one full assistant turn against `messages`, in place.
+
+    Handles the model call plus any tool rounds until the assistant stops, for
+    either provider. Appends the assistant (and tool-result) messages and returns
+    the assistant's text. `on_tool(name)` is called as each tool runs so a UI or
+    console can show "[reading: ...]". The user message must already be appended.
+
+    This is the shared core used by both the terminal chat loop and the web UI —
+    neither prints from here, so the caller decides how to surface the reply.
+    """
+    if engine.name == "Claude":
+        return _claude_turn(engine, reader, system, history, interval,
+                            messages, expected_vin4, on_tool)
+    return _openai_turn(engine, reader, system, history, interval,
+                        messages, expected_vin4, on_tool)
+
+
+def _claude_turn(engine, reader, system, history, interval, messages, expected_vin4, on_tool):
+    text_parts = []
+    while True:
+        resp = engine.client.messages.create(
+            model=engine.model, max_tokens=1500, thinking={"type": "disabled"},
+            system=system, tools=CLAUDE_TOOLS,
+            messages=obd_images.inflate_for_claude(messages))
+        # Store as plain dicts so the session is JSON-serializable.
+        messages.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
+        for b in resp.content:
+            if b.type == "text" and b.text.strip():
+                text_parts.append(b.text.strip())
+        if resp.stop_reason != "tool_use":
+            break
+        results = []
+        for b in resp.content:
+            if b.type == "tool_use":
+                if on_tool:
+                    on_tool(b.name)
+                out = execute_tool(reader, b.name, b.input, history, interval, expected_vin4)
+                results.append({"type": "tool_result", "tool_use_id": b.id, "content": out})
+        messages.append({"role": "user", "content": results})
+    return "\n\n".join(text_parts)
+
+
+def _openai_turn(engine, reader, system, history, interval, messages, expected_vin4, on_tool):
+    text_parts = []
+    while True:
+        resp = engine.client.chat.completions.create(
+            model=engine.model, messages=obd_images.inflate_for_openai(messages),
+            tools=OPENAI_TOOLS)
+        msg = resp.choices[0].message
+        messages.append(msg.model_dump(exclude_none=True))
+        if msg.content and msg.content.strip():
+            text_parts.append(msg.content.strip())
+        if not msg.tool_calls:
+            break
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            if on_tool:
+                on_tool(tc.function.name)
+            out = execute_tool(reader, tc.function.name, args, history, interval, expected_vin4)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+    return "\n\n".join(text_parts)
+
+
+def chat_loop(engine, reader, system, history, interval, messages, persist, state):
+    """Terminal chat loop — reads user turns, runs them, prints the reply."""
+    def show_tool(name):
+        print(f"\033[2m  [reading: {name}]\033[0m")
+
     while True:
         user, attachments = collect_turn(state)
         if user is None:
             break
         messages.append(obd_images.user_turn(user, attachments))
-        while True:
-            resp = client.messages.create(
-                model=model, max_tokens=1500, thinking={"type": "disabled"},
-                system=system, tools=CLAUDE_TOOLS,
-                messages=obd_images.inflate_for_claude(messages))
-            # Store as plain dicts so the session is JSON-serializable.
-            messages.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
-            for b in resp.content:
-                if b.type == "text" and b.text.strip():
-                    print("\n" + b.text.strip())
-            if resp.stop_reason != "tool_use":
-                break
-            results = []
-            for b in resp.content:
-                if b.type == "tool_use":
-                    print(f"\033[2m  [reading: {b.name}]\033[0m")
-                    out = execute_tool(reader, b.name, b.input, history, interval,
-                                       state.get("expected_vin4"))
-                    results.append({"type": "tool_result", "tool_use_id": b.id, "content": out})
-            messages.append({"role": "user", "content": results})
-        persist()
-
-
-def openai_chat(client, model, system, reader, history, interval, messages, persist, state):
-    while True:
-        user, attachments = collect_turn(state)
-        if user is None:
-            break
-        messages.append(obd_images.user_turn(user, attachments))
-        while True:
-            resp = client.chat.completions.create(
-                model=model, messages=obd_images.inflate_for_openai(messages),
-                tools=OPENAI_TOOLS)
-            msg = resp.choices[0].message
-            messages.append(msg.model_dump(exclude_none=True))
-            if msg.content:
-                print("\n" + msg.content.strip())
-            if not msg.tool_calls:
-                break
-            for tc in msg.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                print(f"\033[2m  [reading: {tc.function.name}]\033[0m")
-                out = execute_tool(reader, tc.function.name, args, history, interval,
-                                   state.get("expected_vin4"))
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+        text = run_turn(engine, reader, system, history, interval, messages,
+                        state.get("expected_vin4"), on_tool=show_tool)
+        if text:
+            print("\n" + text)
         persist()
 
 
@@ -615,10 +643,7 @@ def main():
         save_session(session, messages)
 
     try:
-        if engine.name == "Claude":
-            claude_chat(engine.client, engine.model, system, reader, args.history, interval, messages, persist, state)
-        else:
-            openai_chat(engine.client, engine.model, system, reader, args.history, interval, messages, persist, state)
+        chat_loop(engine, reader, system, args.history, interval, messages, persist, state)
     finally:
         reader.close()
         path = save_session(session, messages)

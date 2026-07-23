@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1216">
+<title>OBDAI CarChat</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171c22; --panel2: #1e252d; --line: #2a333d;
+    --text: #e7edf3; --dim: #8a97a6; --accent: #37c8f0; --accent2: #1f9ed1;
+    --user: #23405a; --tool: #2a2f27; --warn: #f0a437; --err: #e0564b;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 16px/1.5 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100dvh; }
+
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  header .logo { font-weight: 800; letter-spacing: .5px; color: var(--accent); }
+  header .car { flex: 1; min-width: 0; }
+  header .car .name { font-size: 14px; font-weight: 600; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  header .car .sub { font-size: 11px; color: var(--dim); }
+  header .badge { font-size: 10px; padding: 2px 7px; border-radius: 999px;
+    background: var(--panel2); color: var(--dim); border: 1px solid var(--line); }
+  header .badge.sim { color: var(--warn); border-color: var(--warn); }
+  header button.icon { background: none; border: none; color: var(--dim);
+    font-size: 20px; padding: 6px; cursor: pointer; }
+
+  #log { flex: 1; overflow-y: auto; padding: 16px 12px 6px; display: flex;
+    flex-direction: column; gap: 12px; }
+  .row { display: flex; }
+  .row.user { justify-content: flex-end; }
+  .bubble { max-width: 86%; padding: 10px 13px; border-radius: var(--radius);
+    white-space: pre-wrap; word-wrap: break-word; }
+  .assistant .bubble { background: var(--panel2); border: 1px solid var(--line);
+    border-top-left-radius: 4px; }
+  .user .bubble { background: var(--user); border-bottom-right-radius: 4px; }
+  .bubble img { max-width: 100%; border-radius: 10px; margin: 6px 0 2px;
+    display: block; }
+  .tools { font-size: 12px; color: var(--dim); margin: -4px 4px 0; }
+  .tools .chip { display: inline-block; background: var(--tool); color: #b8c4a8;
+    border-radius: 999px; padding: 1px 8px; margin: 2px 4px 0 0; font-size: 11px; }
+  .note { text-align: center; color: var(--dim); font-size: 12px; padding: 6px; }
+  .typing { color: var(--dim); font-style: italic; }
+
+  #composer { border-top: 1px solid var(--line); background: var(--panel);
+    padding: 8px 10px; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  #thumbs { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 2px 8px; }
+  #thumbs:empty { display: none; }
+  .thumb { position: relative; width: 60px; height: 60px; border-radius: 10px;
+    overflow: hidden; border: 1px solid var(--line); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .thumb button { position: absolute; top: -1px; right: -1px; width: 20px; height: 20px;
+    border: none; border-radius: 0 0 0 8px; background: rgba(0,0,0,.65);
+    color: #fff; font-size: 13px; line-height: 20px; cursor: pointer; }
+  .inputrow { display: flex; align-items: flex-end; gap: 8px; }
+  .inputrow textarea { flex: 1; resize: none; max-height: 140px; padding: 11px 12px;
+    border-radius: 22px; border: 1px solid var(--line); background: var(--panel2);
+    color: var(--text); font: inherit; outline: none; }
+  .inputrow textarea:focus { border-color: var(--accent2); }
+  .btn { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; border: none;
+    font-size: 20px; cursor: pointer; display: grid; place-items: center; }
+  .btn.attach { background: var(--panel2); color: var(--accent); border: 1px solid var(--line); }
+  .btn.send { background: var(--accent); color: #06222c; font-weight: 700; }
+  .btn:disabled { opacity: .45; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="logo">OBDAI</span>
+    <div class="car">
+      <div class="name" id="carName">…</div>
+      <div class="sub" id="carSub"></div>
+    </div>
+    <span class="badge" id="prov"></span>
+    <button class="icon" id="newBtn" title="New session">✎</button>
+  </header>
+
+  <div id="log">
+    <div class="note" id="hello">Connecting…</div>
+  </div>
+
+  <div id="composer">
+    <div id="thumbs"></div>
+    <div class="inputrow">
+      <button class="btn attach" id="attachBtn" title="Add a photo">📎</button>
+      <input type="file" id="file" accept="image/*" capture="environment" hidden>
+      <textarea id="text" rows="1" placeholder="Ask about the car… (attach a photo with 📎)"></textarea>
+      <button class="btn send" id="sendBtn" title="Send">➤</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const log = $('#log'), textEl = $('#text'), thumbs = $('#thumbs');
+let pending = [];       // [{name, thumb}]
+let busy = false;
+
+function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function scroll(){ log.scrollTop = log.scrollHeight; }
+
+function addBubble(role, html, imgs){
+  const row = document.createElement('div'); row.className = 'row ' + role;
+  const b = document.createElement('div'); b.className = 'bubble';
+  b.innerHTML = html;
+  (imgs||[]).forEach(src => { const im=document.createElement('img'); im.src=src; b.appendChild(im); });
+  row.appendChild(b); log.appendChild(row); scroll(); return b;
+}
+function addTools(names){
+  if(!names || !names.length) return;
+  const d = document.createElement('div'); d.className = 'tools';
+  d.innerHTML = 'read the car: ' + names.map(n=>`<span class="chip">${esc(n)}</span>`).join('');
+  log.appendChild(d); scroll();
+}
+
+async function refreshStatus(){
+  const s = await (await fetch('/api/status')).json();
+  $('#carName').textContent = s.vehicle;
+  $('#carSub').textContent = s.vin ? ('VIN …' + s.vin.slice(-4)) : 'VIN not read';
+  $('#prov').textContent = s.provider;
+  if(s.simulated){ $('#prov').textContent = s.provider + ' · SIM'; $('#prov').classList.add('sim'); }
+  const hello = $('#hello');
+  if(hello) hello.textContent = s.simulated
+    ? 'Simulated demo data — not a real car. Ask anything, or tap 📎 to show a photo.'
+    : 'Connected. Ask anything, or tap 📎 to show it a part / code / leak.';
+}
+
+function renderThumbs(){
+  thumbs.innerHTML = '';
+  pending.forEach((p, i) => {
+    const t = document.createElement('div'); t.className = 'thumb';
+    t.innerHTML = `<img src="${p.thumb}"><button data-i="${i}">×</button>`;
+    thumbs.appendChild(t);
+  });
+  thumbs.querySelectorAll('button').forEach(b =>
+    b.onclick = () => { pending.splice(+b.dataset.i,1); renderThumbs(); syncPending(); });
+}
+async function syncPending(){ if(pending.length===0) await fetch('/api/pending/clear',{method:'POST'}); }
+
+$('#attachBtn').onclick = () => $('#file').click();
+$('#file').onchange = async e => {
+  const files = [...e.target.files]; e.target.value='';
+  for(const f of files){
+    const fd = new FormData(); fd.append('file', f);
+    const r = await fetch('/api/upload', {method:'POST', body:fd});
+    const j = await r.json();
+    if(j.error){ addBubble('assistant', '⚠️ '+esc(j.error)); continue; }
+    pending.push({name: j.attachment.name, thumb: j.attachment.thumb});
+    renderThumbs();
+  }
+};
+
+async function send(){
+  if(busy) return;
+  const text = textEl.value.trim();
+  if(!text && pending.length===0) return;
+  busy = true; $('#sendBtn').disabled = true;
+
+  const imgs = pending.map(p => p.thumb);
+  addBubble('user', esc(text) || '<span class="typing">(photo)</span>', imgs);
+  textEl.value=''; textEl.style.height='auto';
+  pending = []; renderThumbs();
+
+  const typing = addBubble('assistant', '<span class="typing">reading the car…</span>');
+  const fd = new FormData(); fd.append('text', text);
+  try{
+    const j = await (await fetch('/api/chat',{method:'POST', body:fd})).json();
+    typing.closest('.row').remove();
+    addTools(j.tools);
+    addBubble('assistant', esc(j.reply || '(no reply)'));
+  }catch(err){
+    typing.innerHTML = '⚠️ ' + esc(''+err);
+  }finally{
+    busy=false; $('#sendBtn').disabled=false; textEl.focus();
+  }
+}
+$('#sendBtn').onclick = send;
+textEl.addEventListener('keydown', e => {
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+});
+textEl.addEventListener('input', () => {
+  textEl.style.height='auto'; textEl.style.height = Math.min(textEl.scrollHeight,140)+'px';
+});
+
+$('#newBtn').onclick = async () => {
+  if(!confirm('Start a new session on this car?')) return;
+  await fetch('/api/new',{method:'POST'});
+  log.querySelectorAll('.row, .tools').forEach(n=>n.remove());
+  pending=[]; renderThumbs();
+  const n=document.createElement('div'); n.className='note'; n.textContent='New session started.';
+  log.appendChild(n);
+};
+
+refreshStatus();
+</script>
+</body>
+</html>
