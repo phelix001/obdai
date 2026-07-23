@@ -240,7 +240,7 @@ def chat(text: str = Form("")):
     try:
         reply = obd_chat.run_turn(
             S["engine"], S["reader"], S["system"], S["history"], S["interval"],
-            S["messages"], S["expected_vin4"], on_tool=tools.append)
+            S["messages"], S["expected_vin4"], on_tool=tools.append, vehicle=S["vehicle"])
     except obd_connect.ObdConnectionError as e:
         reply = (f"⚠️ Lost the connection to the OBD adapter: {e}\n"
                  "Check the cable / Bluetooth link and the ignition, then try again.")
@@ -274,7 +274,8 @@ def chat_stream(text: str = Form("")):
         try:
             result["reply"] = obd_chat.run_turn(
                 S["engine"], S["reader"], S["system"], S["history"], S["interval"],
-                S["messages"], S["expected_vin4"], on_tool=lambda n: q.put(("tool", n)))
+                S["messages"], S["expected_vin4"], on_tool=lambda n: q.put(("tool", n)),
+                vehicle=S["vehicle"])
         except obd_connect.ObdConnectionError as e:
             result["reply"] = (f"⚠️ Lost the connection to the OBD adapter: {e}\n"
                                "Check the cable / Bluetooth link and the ignition, then try again.")

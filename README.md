@@ -1,18 +1,22 @@
 # OBDAI
 
-**AI-assisted OBD2 diagnostics for your car.** Plug a cheap ELM327 adapter into your
-car's OBD2 port, and let an LLM (Claude or OpenAI) read the live data and help you
-figure out what's wrong — and what it'll cost to fix.
+**Chat with an AI mechanic about your car.** Plug a cheap ELM327 adapter into your
+car's OBD2 port and talk to an LLM (Claude or OpenAI) that **reads the live data on
+demand**, looks at **photos you attach**, and — when something's wrong — **shows you the
+parts to buy with clickable RockAuto / NAPA / YouTube links** for your exact year/make/model.
 
-Two tools, one shared engine:
+It's **one app**, started two ways:
 
-| Product | Launcher | What it is |
-|---|---|---|
-| **OBDAI OneShot** | `./run.sh` (or `./oneshot.sh`) | Guided, start-to-finish diagnosis that produces a **structured report** — most likely problem, cheapest fix, and clickable parts + how-to links. |
-| **OBDAI CarChat** | `./2run.sh` (or `./carchat.sh`) | An **interactive chat** with an AI mechanic while you work on the car. It reads the car on demand, looks at photos you attach, and remembers the session. |
+| Command | What it does |
+|---|---|
+| `./2run.sh` (or `./carchat.sh`) | Open the chat. Ask anything; it reads the car and diagnoses when useful. |
+| `./run.sh` (or `./oneshot.sh`) | Same app, **diagnosis-first**: runs a full diagnosis immediately, then keeps chatting. |
 
-Both run against a real adapter **or a built-in simulator** (`--simulate`, no hardware
-needed), and both let you choose Claude or OpenAI at startup.
+Inside the chat the assistant can, on its own or when you ask: read sensors / trouble
+codes / monitors / VIN, run a guided live capture, produce a **full structured
+diagnosis** (most likely problem, cost, cheapest fix, parts + links), and **suggest
+parts** for any repair. Runs against a real adapter **or a built-in simulator**
+(`--simulate`), Claude or OpenAI chosen at startup.
 
 > ⚠️ **Advisory only.** These tools help you interpret OBD2 data — they are not a
 > substitute for a mechanic. Always confirm a trouble code with a second scanner
@@ -45,13 +49,12 @@ Your keys live only in `.env`, which is gitignored and never leaves your machine
 
 ## Try it with no hardware
 
-The simulator replays a real car's data so you can see both tools work before you
-ever plug in:
+The simulator replays a real car's data so you can try it before you ever plug in:
 
 ```bash
-./2run.sh --simulate                 # CarChat, simulated 2010 Audi A4
+./2run.sh --simulate                 # chat, simulated 2010 Audi A4
 ./2run.sh --simulate --sim-car honda # simulate a different car
-./run.sh  --simulate                 # OneShot, full simulated diagnosis
+./run.sh  --simulate                 # diagnosis-first, then chat
 ```
 
 ## Connect a real adapter
@@ -60,8 +63,8 @@ Ignition must be **ON** (engine running if you want live sensor data — the ada
 powered by the OBD2 port).
 
 ```bash
-./run.sh          # OneShot
-./2run.sh         # CarChat
+./2run.sh         # chat
+./run.sh          # diagnosis-first, then chat
 ```
 
 - **USB:** just plug it in — it auto-detects `/dev/ttyUSB*` / `/dev/ttyACM*` and the baud rate.
@@ -79,31 +82,35 @@ and asks you to confirm or correct it — so it never assumes the wrong car.
 
 ---
 
-## OBDAI OneShot — `run.sh`
-
-A single guided pass that ends in a saved report:
-
-1. Asks your symptoms.
-2. Reads a baseline snapshot + trouble codes + on-board monitors (Mode 06, incl. catalyst) + manufacturer data.
-3. AI decides whether a short **live capture** would help, then walks you through it (idle → rev → oil-cap test, etc.).
-4. Produces a **diagnosis**: most likely problem, estimated cost, cheapest fix, clickable RockAuto/NAPA parts, and a YouTube how-to.
-5. Saves the report to `reports/` and a per-vehicle record to `history/` so it can compare across visits.
-
-```bash
-./run.sh                                   # real car
-./run.sh --simulate                        # demo
-./run.sh --vehicle "2015 Honda Accord 2.4" # override the vehicle label
-./run.sh --diagnose-file pending_XXXX.json # produce a diagnosis offline from a saved capture
-```
-
-## OBDAI CarChat — `2run.sh`
+## The chat — `2run.sh`
 
 A conversation with an AI mechanic that can **read the car and look at photos** as you
-talk. You drive; it pulls data when a reading would settle the question.
+talk. You drive; it pulls data when a reading would settle the question, and when it
+recommends a repair it shows you **buyable parts + a how-to video**.
 
 The assistant's tools: current sensor values · trouble codes (stored/pending/permanent) ·
 Mode 06 monitors + readiness · VAG/Audi manufacturer data · **VIN read + validation** ·
-guided live capture.
+guided live capture · **suggest_parts** (RockAuto/NAPA/YouTube links for your car) ·
+**full_diagnosis** (a structured report: most likely problem, cost, cheapest fix, parts).
+
+Ask "what's wrong?" and it runs a full diagnosis; say "I'm replacing the coils" and it
+tells you what to check *and* hands you the parts to buy.
+
+## Diagnosis-first — `run.sh`
+
+The same app, but it **runs a full diagnosis the moment it connects**, then leaves you in
+the chat to dig in. This is the old one-shot flow, now inside the one app.
+
+```bash
+./run.sh                                   # connect, diagnose, then chat
+./run.sh --simulate                        # demo
+./run.sh --port tcp:192.168.0.10:35000     # WiFi adapter
+# offline: produce a diagnosis from a previously-saved capture (no hardware):
+venv/bin/python obd_diagnose.py --diagnose-file pending_XXXX.json
+```
+
+Diagnoses save to `reports/` and a per-vehicle record to `history/` so the assistant can
+compare across visits.
 
 **Photos** — show it a part, a connector, a leak, or another scanner's screen:
 
@@ -121,7 +128,7 @@ tap-to-attach experience, use the mobile web UI below.)
 
 ### Mobile web UI (phone-friendly)
 
-CarChat also has a **web interface** — chat bubbles, and a 📎 button that opens your
+The chat also has a **web interface** — chat bubbles, and a 📎 button that opens your
 camera or gallery, so you attach photos with a tap instead of slash commands. It's the
 same engine underneath (same tools, same photo pipeline).
 

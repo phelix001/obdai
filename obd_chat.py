@@ -35,10 +35,12 @@ import obd_connect
 import obd_images
 import obd_vin
 import obd_vehicle
+import obd_parts
+import obd_history
 from obd_diagnose import (
     SIGNALS, MONITORABLE, DEFAULT_VEHICLE, SIM_CARS, KNOWN_VEHICLE_VINS,
-    open_reader, read_signal, run_capture, summarize_capture,
-    choose_provider, build_engine,
+    open_reader, read_signal, read_baseline, run_capture, summarize_capture,
+    final_diagnosis, choose_provider, build_engine,
 )
 
 # Sensors read by default when the assistant asks for "current values".
@@ -88,7 +90,36 @@ TOOL_DEFS = [
              "instruction": {"type": "string"}, "hold_s": {"type": "integer"}},
              "required": ["instruction", "hold_s"]},
              "description": "1-4 steps for the user to perform."}}}},
+    {"name": "suggest_parts",
+     "description": "Show buyable parts + a how-to video for a repair on THIS vehicle, as "
+                    "clickable RockAuto / NAPA / YouTube links. Call this whenever you "
+                    "recommend replacing or buying a part, so the user gets real links "
+                    "instead of guesses. Give the plain part name (and an OEM/aftermarket "
+                    "part number if you're confident); the links are built for you.",
+     "schema": {"type": "object", "properties": {
+         "parts": {"type": "array", "items": {"type": "object", "properties": {
+             "name": {"type": "string", "description": "plain part name, e.g. 'PCV valve / oil separator'"},
+             "part_number": {"type": "string", "description": "OEM/aftermarket number if confident, else ''"}},
+             "required": ["name"]},
+             "description": "The parts to buy for the fix."},
+         "video_search": {"type": "string",
+                          "description": "a YouTube how-to search string including the vehicle"}},
+         "required": ["parts"]}},
+    {"name": "full_diagnosis",
+     "description": "Produce a full structured diagnosis of the car NOW: reads a baseline "
+                    "snapshot, then returns the single most likely problem, estimated cost, "
+                    "cheapest DIY fix, and the parts to buy (with links). Use when the user "
+                    "asks 'what's wrong' / 'diagnose it', or to wrap up with a report.",
+     "schema": {"type": "object", "properties": {
+         "symptoms": {"type": "string", "description": "symptoms the user has mentioned, if any"},
+         "capture_text": {"type": "string", "description": "notes from any live capture already done"},
+         "save": {"type": "boolean", "description": "save a report to reports/ + history (default true)"}}}},
 ]
+
+# Tools whose output IS the user-facing deliverable (parts links, the diagnosis
+# report). Their result is shown to the user verbatim, not just handed to the model —
+# otherwise the model paraphrases "links above" and the actual links never appear.
+DISPLAY_TOOLS = {"suggest_parts", "full_diagnosis"}
 
 CLAUDE_TOOLS = [{"name": t["name"], "description": t["description"],
                  "input_schema": t["schema"]} for t in TOOL_DEFS]
@@ -97,15 +128,17 @@ OPENAI_TOOLS = [{"type": "function", "function": {
     for t in TOOL_DEFS]
 
 
-def execute_tool(reader, name, args, history, interval, expected_vin4=None):
+def execute_tool(reader, name, args, history, interval, expected_vin4=None,
+                 engine=None, vehicle=None):
     """Run a tool against the OBD adapter and return a text result for the model.
 
     A dead adapter must not end the conversation: the failure is reported back to
     the assistant as tool output so it can tell the user what to check, and is
-    explicitly labelled so it never gets mistaken for a reading.
+    explicitly labelled so it never gets mistaken for a reading. `engine`/`vehicle`
+    are needed by full_diagnosis (which makes its own structured model call).
     """
     try:
-        return _run_tool(reader, name, args, history, interval, expected_vin4)
+        return _run_tool(reader, name, args, history, interval, expected_vin4, engine, vehicle)
     except obd_connect.ObdConnectionError as e:
         return (f"TOOL FAILED — no connection to the OBD adapter: {e}\n"
                 "No data was read from the car. Tell the user to check the adapter "
@@ -115,7 +148,8 @@ def execute_tool(reader, name, args, history, interval, expected_vin4=None):
                 "No data was read from the car. Do not guess values.")
 
 
-def _run_tool(reader, name, args, history, interval, expected_vin4=None):
+def _run_tool(reader, name, args, history, interval, expected_vin4=None,
+              engine=None, vehicle=None):
     args = args or {}
     if name == "read_current":
         keys = [k for k in (args.get("signals") or DEFAULT_READ) if k in SIGNALS]
@@ -161,7 +195,61 @@ def _run_tool(reader, name, args, history, interval, expected_vin4=None):
         lm, step_snaps = run_capture(reader, request, history, interval)
         return summarize_capture(lm, step_snaps, [])
 
+    if name == "suggest_parts":
+        md = obd_parts.parts_markdown(args.get("parts") or [], args.get("video_search", ""))
+        return md or "No parts were specified to look up."
+
+    if name == "full_diagnosis":
+        if engine is None or not vehicle:
+            return "full_diagnosis is unavailable here (no diagnosis engine in context)."
+        return run_full_diagnosis(engine, reader, vehicle,
+                                  symptoms=args.get("symptoms", ""),
+                                  capture_text=args.get("capture_text", ""),
+                                  save=args.get("save", True))
+
     return f"Unknown tool: {name}"
+
+
+def run_full_diagnosis(engine, reader, vehicle, symptoms="", capture_text="", save=True):
+    """Read a baseline, run the structured diagnosis, return it as markdown (+ optionally
+    save a report). This is the one-shot OneShot capability, available inside the chat."""
+    baseline, values = read_baseline(reader)
+    data = final_diagnosis(engine, vehicle, baseline, symptoms, capture_text)
+
+    md = [f"**Most likely problem:** {data['most_likely_problem']}",
+          f"**Estimated repair cost:** {data['estimated_repair_cost']}",
+          "", data["summary"], "",
+          f"**Cheapest fix:** {data['cheapest_fix']}"]
+    parts_md = obd_parts.parts_markdown(data.get("parts") or [], data.get("video_search", ""))
+    if parts_md:
+        md += ["", parts_md]
+
+    if save:
+        try:
+            _save_diagnosis(vehicle, symptoms, baseline, capture_text, data, values)
+            md += ["", "_(Saved to reports/ and this vehicle's history.)_"]
+        except Exception:
+            pass          # saving is a convenience; never fail the diagnosis over it
+    return "\n".join(md)
+
+
+def _save_diagnosis(vehicle, symptoms, baseline, capture_text, data, values):
+    from obd_diagnose import save_report
+    plain = obd_parts.plain_parts_lines(data.get("parts") or [])
+    video = obd_parts.youtube_link(data.get("video_search", ""))
+    save_report(vehicle, symptoms, baseline, capture_text, data, plain, video, note="")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    obd_history.append_run(script_dir, {
+        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        "vehicle": vehicle,
+        "vin": None,
+        "symptoms": symptoms,
+        "metrics": {k: values.get(k) for k in
+                    ("ltft_b1", "stft_b1", "lambda_b1s1", "o2_b1s2_v", "coolant")},
+        "dtcs": values.get("dtcs"),
+        "most_likely_problem": data.get("most_likely_problem"),
+        "cheapest_fix": data.get("cheapest_fix"),
+    })
 
 
 def system_prompt(vehicle):
@@ -174,6 +262,8 @@ the vehicle. You can read the car's live data on demand with your tools:
 - read_monitors: Mode 06 on-board monitor tests (incl. catalyst) + readiness
 - read_manufacturer_data: Audi/VAG-specific data (boost, oil temp, fuel rail pressure, misfire counters, ...)
 - live_capture: a guided capture where the user idles/revs while data logs
+- suggest_parts: show buyable parts + a how-to video as clickable RockAuto/NAPA/YouTube links
+- full_diagnosis: a full structured diagnosis (most likely problem, cost, cheapest fix, parts+links)
 
 How to help:
 - When the user says they're about to do a job (e.g. "I'm replacing the MAF"), tell them \
@@ -181,6 +271,10 @@ concretely what to check before and after, then actually CALL the relevant tool 
 rather than guessing.
 - Prefer real data over speculation — call a tool whenever a reading would settle the question.
 - Interpret readings in plain, practical terms and give the next concrete step.
+- When you recommend replacing or buying a part, CALL suggest_parts so the user gets real, \
+clickable links for THIS car — never paste store URLs yourself. When the user asks "what's \
+wrong" or wants a summary/report, CALL full_diagnosis. The output of these two tools is \
+shown to the user directly, so don't repeat the links — just add a short comment.
 - Keep it conversational and concise. This is a chat at the car, not an essay.
 
 Photos: the user can attach pictures (a part, a connector, a leak, a dash warning, \
@@ -458,26 +552,27 @@ def collect_turn(state):
 
 
 def run_turn(engine, reader, system, history, interval, messages,
-             expected_vin4=None, on_tool=None):
+             expected_vin4=None, on_tool=None, vehicle=None):
     """Run one full assistant turn against `messages`, in place.
 
     Handles the model call plus any tool rounds until the assistant stops, for
     either provider. Appends the assistant (and tool-result) messages and returns
     the assistant's text. `on_tool(name)` is called as each tool runs so a UI or
     console can show "[reading: ...]". The user message must already be appended.
+    `vehicle` is passed to tools that need it (full_diagnosis).
 
     This is the shared core used by both the terminal chat loop and the web UI —
     neither prints from here, so the caller decides how to surface the reply.
     """
     if engine.name == "Claude":
         return _claude_turn(engine, reader, system, history, interval,
-                            messages, expected_vin4, on_tool)
+                            messages, expected_vin4, on_tool, vehicle)
     return _openai_turn(engine, reader, system, history, interval,
-                        messages, expected_vin4, on_tool)
+                        messages, expected_vin4, on_tool, vehicle)
 
 
-def _claude_turn(engine, reader, system, history, interval, messages, expected_vin4, on_tool):
-    text_parts = []
+def _claude_turn(engine, reader, system, history, interval, messages, expected_vin4, on_tool, vehicle):
+    text_parts, shown = [], []
     while True:
         resp = engine.client.messages.create(
             model=engine.model, max_tokens=1500, thinking={"type": "disabled"},
@@ -495,14 +590,17 @@ def _claude_turn(engine, reader, system, history, interval, messages, expected_v
             if b.type == "tool_use":
                 if on_tool:
                     on_tool(b.name)
-                out = execute_tool(reader, b.name, b.input, history, interval, expected_vin4)
+                out = execute_tool(reader, b.name, b.input, history, interval,
+                                   expected_vin4, engine, vehicle)
+                if b.name in DISPLAY_TOOLS:
+                    shown.append(out)
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": out})
         messages.append({"role": "user", "content": results})
-    return "\n\n".join(text_parts)
+    return "\n\n".join(text_parts + shown)
 
 
-def _openai_turn(engine, reader, system, history, interval, messages, expected_vin4, on_tool):
-    text_parts = []
+def _openai_turn(engine, reader, system, history, interval, messages, expected_vin4, on_tool, vehicle):
+    text_parts, shown = [], []
     while True:
         resp = engine.client.chat.completions.create(
             model=engine.model, messages=obd_images.inflate_for_openai(messages),
@@ -520,9 +618,12 @@ def _openai_turn(engine, reader, system, history, interval, messages, expected_v
                 args = {}
             if on_tool:
                 on_tool(tc.function.name)
-            out = execute_tool(reader, tc.function.name, args, history, interval, expected_vin4)
+            out = execute_tool(reader, tc.function.name, args, history, interval,
+                               expected_vin4, engine, vehicle)
+            if tc.function.name in DISPLAY_TOOLS:
+                shown.append(out)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
-    return "\n\n".join(text_parts)
+    return "\n\n".join(text_parts + shown)
 
 
 def chat_loop(engine, reader, system, history, interval, messages, persist, state):
@@ -536,7 +637,8 @@ def chat_loop(engine, reader, system, history, interval, messages, persist, stat
             break
         messages.append(obd_images.user_turn(user, attachments))
         text = run_turn(engine, reader, system, history, interval, messages,
-                        state.get("expected_vin4"), on_tool=show_tool)
+                        state.get("expected_vin4"), on_tool=show_tool,
+                        vehicle=state.get("vehicle"))
         if text:
             print("\n" + text)
         persist()
@@ -561,6 +663,9 @@ def main():
                     help="which car the simulator reports (default: audi)")
     ap.add_argument("--provider", choices=["claude", "openai"], default=None)
     ap.add_argument("--new", action="store_true", help="start a new session (skip the picker)")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="run a full diagnosis immediately, then keep chatting "
+                         "(this is what the old one-shot 'run.sh' now does)")
     ap.add_argument("--session", default=None, help="resume a specific session_*.json file")
     ap.add_argument("--history", type=int, default=48, help="live-display sparkline length")
     ap.add_argument("--interval", type=float, default=None, help="seconds between live samples")
@@ -572,7 +677,7 @@ def main():
     # Choose: resume an existing session, or start new.
     if args.session:
         chosen = load_session_file(args.session)
-    elif args.new:
+    elif args.new or args.diagnose:      # a one-shot diagnosis always starts fresh
         chosen = "new"
     else:
         sessions = load_all_sessions()
@@ -635,13 +740,31 @@ def main():
 
     # Photos live beside the transcript, so resuming a session still shows them.
     state = {"media_dir": session_media_dir(session["id"]), "pending": [], "listing": [],
-             "expected_vin4": session.get("vin_last4")}
+             "expected_vin4": session.get("vin_last4"), "vehicle": vehicle}
     n_pics = obd_images.count_images(messages)
     if n_pics:
         print(f"\033[2m({n_pics} photo{'s' if n_pics != 1 else ''} in this session)\033[0m")
 
     def persist():
         save_session(session, messages)
+
+    # One-shot diagnosis mode (formerly run.sh): run a full diagnosis first, then chat.
+    if args.diagnose and not resuming:
+        print("\nRunning a full diagnosis...\n")
+        messages.append({"role": "user",
+                         "content": "Run a full diagnosis of this vehicle now: read the car, "
+                         "then tell me the most likely problem, the cheapest fix, and the "
+                         "parts I should buy with links."})
+        try:
+            text = run_turn(engine, reader, system, args.history, interval, messages,
+                            state.get("expected_vin4"),
+                            on_tool=lambda n: print(f"\033[2m  [reading: {n}]\033[0m"),
+                            vehicle=vehicle)
+            if text:
+                print("\n" + text)
+            persist()
+        except obd_connect.ObdConnectionError as e:
+            print(f"\n[Diagnosis needs the adapter: {e}]")
 
     try:
         chat_loop(engine, reader, system, args.history, interval, messages, persist, state)

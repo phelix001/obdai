@@ -35,6 +35,7 @@ except ImportError:
 from obd_display import LiveMonitor
 import obd_connect
 import obd_transport
+import obd_parts
 import obd_modes
 import obd_history
 import obd_uds
@@ -630,26 +631,15 @@ def render_diagnosis(data, vehicle):
     if parts:
         print("\n### Parts (clickable links) ###")
         for part in parts:
-            name = part["name"]
-            pn = (part.get("part_number") or "").strip()
-            query = part["search_query"]
-            label = name + (f"  [PN {pn}]" if pn else "")
-            # Keyword searches use the plain part name (no vehicle text — it only
-            # hurts these part-name searches). Part-number search when we have one.
-            napa = f"https://www.napaonline.com/en/search?text={quote(name)}&referer=v2"
-            if pn:
-                rock = f"https://www.rockauto.com/en/partsearch/?partnum={quote(pn)}"
-            else:
-                rock = f"https://www.rockauto.com/en/partsearch/?partname={quote(name)}"
-            print(f"\n  {label}")
-            print(f"    RockAuto: {osc8(rock, rock)}")
-            print(f"    NAPA:     {osc8(napa, napa)}")
-            lines.append(f"  {label}\n    RockAuto: {rock}\n    NAPA:     {napa}")
+            links = obd_parts.store_links(part.get("name"), part.get("part_number"))
+            print(f"\n  {obd_parts.part_label(part)}")
+            print(f"    RockAuto: {osc8(links['rockauto'], links['rockauto'])}")
+            print(f"    NAPA:     {osc8(links['napa'], links['napa'])}")
+        lines = obd_parts.plain_parts_lines(parts)
 
     video_q = (data.get("video_search") or "").strip()
-    video = ""
-    if video_q:
-        video = f"https://www.youtube.com/results?search_query={quote(video_q)}"
+    video = obd_parts.youtube_link(video_q)
+    if video:
         print("\n### How-to video (clickable) ###")
         print(f"\n  {osc8(video_q, video)}")
     return lines, video

@@ -42,7 +42,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(obd_diagnose, "build_engine", lambda provider: fake_engine)
 
     def fake_turn(engine, reader, system, history, interval, messages,
-                  expected_vin4=None, on_tool=None):
+                  expected_vin4=None, on_tool=None, vehicle=None):
         if on_tool:
             on_tool("read_current")
         messages.append({"role": "assistant",
