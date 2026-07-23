@@ -24,7 +24,11 @@ import sys
 import time
 from urllib.parse import quote
 
-import anthropic
+try:
+    import anthropic          # optional: absent on Android (pydantic-core won't package)
+except ImportError:
+    anthropic = None
+
 from dotenv import load_dotenv
 
 try:
@@ -725,8 +729,26 @@ def choose_provider():
     return "openai" if c in ("2", "openai", "o", "gpt") else "claude"
 
 
+def _use_http_engines():
+    """True when we should talk to the providers over plain HTTPS instead of the SDKs.
+
+    The SDKs need pydantic v2 -> pydantic-core (Rust), which Chaquopy can't package
+    for Android, so the on-device build ships without them. Force with
+    OBD_HTTP_PROVIDER=1; otherwise it's automatic when the SDK isn't importable.
+    """
+    if os.getenv("OBD_HTTP_PROVIDER", "").strip() in ("1", "true", "yes"):
+        return True
+    return anthropic is None
+
+
 def build_engine(provider):
-    """Construct the chosen diagnosis engine, or raise with a clear message."""
+    """Construct the chosen diagnosis engine, or raise with a clear message.
+
+    Uses the official SDK when it's available (desktop) and falls back to the
+    stdlib HTTP engines (obd_provider) when it isn't (Android/Chaquopy).
+    """
+    import obd_provider
+    http = _use_http_engines()
     if provider == "openai":
         key = get_openai_key()
         if not key:
@@ -734,11 +756,11 @@ def build_engine(provider):
                 "OpenAI selected but no key available. Set OPENAI_API_KEY in .env, "
                 "or point OPENAI_OP_REF at a valid 1Password reference "
                 "(current: " + os.getenv("OPENAI_OP_REF", OPENAI_OP_REF) + ").")
-        return OpenAIEngine(key)
+        return obd_provider.OpenAIHttpEngine(key) if http else OpenAIEngine(key)
     key = os.getenv("ANTHROPIC_API_KEY")
     if not key:
         raise EnvironmentError("ANTHROPIC_API_KEY not found — set it in .env")
-    return ClaudeEngine(key)
+    return obd_provider.ClaudeHttpEngine(key) if http else ClaudeEngine(key)
 
 
 def default_data_request():
