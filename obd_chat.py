@@ -227,7 +227,7 @@ def run_full_diagnosis(engine, reader, vehicle, symptoms="", capture_text="", sa
     if save:
         try:
             _save_diagnosis(vehicle, symptoms, baseline, capture_text, data, values)
-            md += ["", "_(Saved to reports/ and this vehicle's history.)_"]
+            md += ["", "(Saved to reports/ and this vehicle's history.)"]
         except Exception:
             pass          # saving is a convenience; never fail the diagnosis over it
     return "\n".join(md)

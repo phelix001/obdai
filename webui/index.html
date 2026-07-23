@@ -59,6 +59,15 @@
 
   #composer { border-top: 1px solid var(--line); background: var(--panel);
     padding: 8px 10px; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  #quick { display: flex; gap: 6px; overflow-x: auto; padding: 0 2px 8px;
+    scrollbar-width: none; }
+  #quick::-webkit-scrollbar { display: none; }
+  .qa { flex: 0 0 auto; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px;
+    font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .qa:active { background: var(--accent2); color: #06222c; }
+  .qa:disabled { opacity: .45; }
+
   #thumbs { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 2px 8px; }
   #thumbs:empty { display: none; }
   .thumb { position: relative; width: 60px; height: 60px; border-radius: 10px;
@@ -98,6 +107,11 @@
   </div>
 
   <div id="composer">
+    <div id="quick">
+      <button class="qa" data-msg="Run a full diagnosis of this car: what's most likely wrong, the cheapest fix, and the parts I should buy.">🔧 Diagnose</button>
+      <button class="qa" data-msg="Read the trouble codes and tell me what they mean for this car.">⚠️ Codes</button>
+      <button class="qa" data-msg="Read the current live sensor values and tell me if anything looks off.">📊 Live data</button>
+    </div>
     <div id="thumbs"></div>
     <div class="inputrow">
       <button class="btn attach" id="attachBtn" title="Add a photo">📎</button>
@@ -221,6 +235,7 @@ async function send(){
   const text = textEl.value.trim();
   if(!text && pending.length===0) return;
   busy = true; $('#sendBtn').disabled = true;
+  document.querySelectorAll('.qa').forEach(b=>b.disabled=true);
 
   const imgs = pending.map(p => p.thumb);
   addBubble('user', esc(text) || '<span class="typing">(photo)</span>', imgs);
@@ -266,9 +281,18 @@ async function send(){
   }catch(err){
     typing.innerHTML = '⚠️ ' + esc(''+err);
   }finally{
-    busy=false; $('#sendBtn').disabled=false; textEl.focus();
+    busy=false; $('#sendBtn').disabled=false;
+    document.querySelectorAll('.qa').forEach(b=>b.disabled=false);
+    textEl.focus();
   }
 }
+// One-tap common asks — the things you actually want at the car.
+document.querySelectorAll('.qa').forEach(b => b.onclick = () => {
+  if(busy) return;
+  textEl.value = b.dataset.msg;
+  send();
+});
+
 $('#sendBtn').onclick = send;
 textEl.addEventListener('keydown', e => {
   if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
