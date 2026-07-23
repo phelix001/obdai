@@ -1,0 +1,12 @@
+# Runtime
+anthropic>=0.117.0        # Claude provider
+openai>=2.1.0             # OpenAI provider
+pyserial>=3.5             # ELM327 over USB / Bluetooth rfcomm
+python-dotenv>=1.1.1      # .env (ANTHROPIC_API_KEY, ...)
+pillow>=12.3.0            # photo downscale + EXIF rotation for /pic and /snap
+
+# Tests
+pytest>=9.1.1
+
+# Optional system tools (not pip): ffmpeg for /snap (webcam capture),
+# adb for /phone (pull photos off an Android), bluez/rfcomm for Bluetooth adapters.

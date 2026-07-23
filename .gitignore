@@ -1,0 +1,34 @@
+# --- secrets: NEVER commit ---
+.env
+.env.*
+!.env.example
+
+# --- python ---
+venv/
+__pycache__/
+*.pyc
+
+# --- runtime output (per-user, per-car) ---
+reports/
+history/
+sessions/
+photos/
+pending_*.json
+report_*.txt
+obd_report.txt
+
+# --- large hardware dumps ---
+serial
+
+# --- mobile / APK build artifacts: kept OUT of the public repo ---
+# Android/Kivy builds land here; do not publish binaries or build junk.
+mobile/
+android/
+*.apk
+*.aab
+.buildozer/
+bin/
+
+# --- misc ---
+.DS_Store
+.claude/

@@ -1,0 +1,104 @@
+{
+  "0x0015": {
+    "name": "Engine Speed",
+    "bytes": 2,
+    "unit": "rpm",
+    "scale": "rpm_2b"
+  },
+  "0x0019": {
+    "name": "Coolant Temperature",
+    "bytes": 1,
+    "unit": "\u00b0C",
+    "scale": "temp_c_minus_48"
+  },
+  "0x00A7": {
+    "name": "Intake Air Temperature",
+    "bytes": 1,
+    "unit": "\u00b0C",
+    "scale": "temp_c_minus_48"
+  },
+  "0x008E": {
+    "name": "Boost Pressure (Absolute)",
+    "bytes": 2,
+    "unit": "kPa",
+    "scale": "u16_div_100"
+  },
+  "0x0091": {
+    "name": "Boost Pressure (Specified)",
+    "bytes": 2,
+    "unit": "kPa",
+    "scale": "u16_div_100"
+  },
+  "0x0093": {
+    "name": "Throttle Valve Angle",
+    "bytes": 1,
+    "unit": "%",
+    "scale": "pct_255"
+  },
+  "0x0107": {
+    "name": "Ignition Timing Angle Cyl 1",
+    "bytes": 2,
+    "unit": "\u00b0CA",
+    "scale": "u16_div_128"
+  },
+  "0x01B5": {
+    "name": "Lambda Control Bank 1",
+    "bytes": 2,
+    "unit": "\u03bb",
+    "scale": "u16_div_32768"
+  },
+  "0x01B6": {
+    "name": "Lambda Control Bank 1 Sensor 2",
+    "bytes": 2,
+    "unit": "\u03bb",
+    "scale": "u16_div_32768"
+  },
+  "0x0483": {
+    "name": "Fuel Rail Pressure (High)",
+    "bytes": 2,
+    "unit": "bar",
+    "scale": "u16_div_10"
+  },
+  "0x0484": {
+    "name": "Fuel Rail Pressure (Requested)",
+    "bytes": 2,
+    "unit": "bar",
+    "scale": "u16_div_10"
+  },
+  "0x04D2": {
+    "name": "Camshaft Adj. Angle Intake",
+    "bytes": 2,
+    "unit": "\u00b0CA",
+    "scale": "u16_div_128"
+  },
+  "0x04D3": {
+    "name": "Camshaft Adj. Angle Exhaust",
+    "bytes": 2,
+    "unit": "\u00b0CA",
+    "scale": "u16_div_128"
+  },
+  "0x054B": {
+    "name": "Turbo Wastegate Duty",
+    "bytes": 1,
+    "unit": "%",
+    "scale": "pct_255"
+  },
+  "0x05A7": {
+    "name": "Misfire Counter Cylinder 1",
+    "bytes": 2,
+    "unit": "count",
+    "scale": "u16_raw"
+  },
+  "0x05E8": {
+    "name": "Oil Temperature",
+    "bytes": 1,
+    "unit": "\u00b0C",
+    "scale": "temp_c_minus_48"
+  },
+  "0x074F": {
+    "name": "Intake Valve Lift State",
+    "bytes": 1,
+    "unit": "",
+    "scale": "ivalve_state"
+  }
+}
