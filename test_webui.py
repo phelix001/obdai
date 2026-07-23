@@ -49,9 +49,12 @@ def client(monkeypatch, tmp_path):
                          "content": [{"type": "text", "text": "stub reply"}]})
         return "stub reply"
 
-    monkeypatch.setattr(server.obd_chat, "run_turn", fake_turn)
+    # Patch the obd_chat module itself — obd_api (where the logic now lives) holds a
+    # reference to the same module object, so this covers both front doors.
+    import obd_chat
+    monkeypatch.setattr(obd_chat, "run_turn", fake_turn)
     # keep session + media under tmp so tests don't litter the repo
-    monkeypatch.setattr(server.obd_chat, "_sessions_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(obd_chat, "_sessions_dir", lambda: str(tmp_path))
 
     args = argparse.Namespace(provider="claude", vehicle=None, simulate=True,
                               sim_car="honda", baud=None, history=48, port_dev=None)

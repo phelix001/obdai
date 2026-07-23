@@ -131,6 +131,49 @@ let busy = false;
 function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function scroll(){ log.scrollTop = log.scrollHeight; }
 
+// ---- transport ------------------------------------------------------------
+// Desktop talks HTTP to the FastAPI server. Inside the Android app there is no
+// server (FastAPI needs pydantic-core, which Chaquopy can't build), so the same
+// calls go through Kotlin's @JavascriptInterface into obd_bridge.py. Both hit the
+// identical handlers in obd_api.py, so the page behaves the same either way.
+const NATIVE = (typeof AndroidBridge !== 'undefined' && AndroidBridge) ? AndroidBridge : null;
+function nativeCall(action, payload){
+  return JSON.parse(NATIVE.call(action, JSON.stringify(payload || {})));
+}
+async function httpPost(path, fields){
+  const fd = new FormData();
+  for(const [k,v] of Object.entries(fields||{})) if(v != null) fd.append(k, v);
+  return (await fetch(path, {method:'POST', body:fd})).json();
+}
+function fileToB64(file){
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1] || '');
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+const api = {
+  isNative: !!NATIVE,
+  async status(){ return NATIVE ? nativeCall('status') : (await fetch('/api/status')).json(); },
+  async vehicleSet(vehicle, vin){
+    return NATIVE ? nativeCall('vehicle_set', {vehicle, vin})
+                  : httpPost('/api/vehicle', {vehicle, vin}); },
+  async pendingClear(){
+    return NATIVE ? nativeCall('pending_clear') : httpPost('/api/pending/clear'); },
+  async newSession(){
+    return NATIVE ? nativeCall('new_session') : httpPost('/api/new'); },
+  async upload(file){
+    if(NATIVE) return nativeCall('upload', {filename: file.name, data_b64: await fileToB64(file)});
+    const fd = new FormData(); fd.append('file', file);
+    return (await fetch('/api/upload', {method:'POST', body:fd})).json(); },
+  async chatStart(text){
+    return NATIVE ? nativeCall('chat_start', {text}) : httpPost('/api/chat/start', {text}); },
+  async poll(){
+    return NATIVE ? nativeCall('poll') : httpPost('/api/chat/poll'); },
+};
+
 // Minimal, safe markdown for assistant replies: escape first (no HTML injection),
 // then add links / bold / italic / code / bullets. Links open in a new tab.
 function mdToHtml(s){
@@ -161,7 +204,7 @@ function addTools(names){
 }
 
 async function refreshStatus(){
-  const s = await (await fetch('/api/status')).json();
+  const s = await api.status();
   $('#carName').textContent = s.vehicle;
   const bits = [];
   bits.push(s.vin ? ('VIN …' + s.vin.slice(-4)) : 'VIN not read');
@@ -186,12 +229,10 @@ $('#carBox').onclick = async () => {
   if(v === null) return;
   const vin = prompt('Correct the VIN (17 chars, or leave blank):', '');
   if(v === null && vin === null) return;
-  const fd = new FormData();
-  if(v && v.trim() && v.trim() !== cur) fd.append('vehicle', v.trim());
-  if(vin && vin.trim()) fd.append('vin', vin.trim());
-  if(![...fd.keys()].length) return;
-  const r = await fetch('/api/vehicle', {method:'POST', body:fd});
-  const j = await r.json();
+  const veh = (v && v.trim() && v.trim() !== cur) ? v.trim() : null;
+  const vn  = (vin && vin.trim()) ? vin.trim() : null;
+  if(!veh && !vn) return;
+  const j = await api.vehicleSet(veh, vn);
   if(j.error){ showBanner(j.error); return; }
   refreshStatus();
 };
@@ -206,29 +247,20 @@ function renderThumbs(){
   thumbs.querySelectorAll('button').forEach(b =>
     b.onclick = () => { pending.splice(+b.dataset.i,1); renderThumbs(); syncPending(); });
 }
-async function syncPending(){ if(pending.length===0) await fetch('/api/pending/clear',{method:'POST'}); }
+async function syncPending(){ if(pending.length===0) await api.pendingClear(); }
 
 $('#attachBtn').onclick = () => $('#file').click();
 $('#file').onchange = async e => {
   const files = [...e.target.files]; e.target.value='';
   for(const f of files){
-    const fd = new FormData(); fd.append('file', f);
-    const r = await fetch('/api/upload', {method:'POST', body:fd});
-    const j = await r.json();
+    const j = await api.upload(f);
     if(j.error){ addBubble('assistant', '⚠️ '+esc(j.error)); continue; }
     pending.push({name: j.attachment.name, thumb: j.attachment.thumb});
     renderThumbs();
   }
 };
 
-function parseSSE(block){
-  let event = 'message', data = '';
-  for(const line of block.split('\n')){
-    if(line.startsWith('event:')) event = line.slice(6).trim();
-    else if(line.startsWith('data:')) data += line.slice(5).trim();
-  }
-  return {event, data};
-}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function send(){
   if(busy) return;
@@ -244,39 +276,30 @@ async function send(){
 
   const typing = addBubble('assistant', '<span class="typing">reading the car…</span>');
   let toolsLine = null;                       // created lazily when the first tool fires
-  const seen = [];
-  const fd = new FormData(); fd.append('text', text);
   try{
-    const resp = await fetch('/api/chat/stream', {method:'POST', body:fd});
-    if(!resp.ok || !resp.body){                // fall back to non-streaming
-      const j = await (await fetch('/api/chat',{method:'POST', body:fd})).json();
-      typing.closest('.row').remove(); addTools(j.tools);
-      addBubble('assistant', mdToHtml(j.reply || '(no reply)'));
-    } else {
-      const reader = resp.body.getReader(), dec = new TextDecoder();
-      let buf = '';
-      for(;;){
-        const {done, value} = await reader.read();
-        if(done) break;
-        buf += dec.decode(value, {stream:true});
-        let i;
-        while((i = buf.indexOf('\n\n')) >= 0){
-          const {event, data} = parseSSE(buf.slice(0, i)); buf = buf.slice(i+2);
-          if(event === 'tool'){
-            const name = JSON.parse(data); seen.push(name);
-            typing.innerHTML = '<span class="typing">reading the car…</span>';
-            if(!toolsLine){ toolsLine = document.createElement('div'); toolsLine.className='tools';
-              toolsLine.innerHTML = 'reading the car: '; typing.closest('.row').before(toolsLine); }
-            const chip = document.createElement('span'); chip.className='chip';
-            chip.textContent = name; toolsLine.appendChild(chip); scroll();
-          } else if(event === 'reply'){
-            const j = JSON.parse(data);
-            typing.closest('.row').remove();
-            addBubble('assistant', mdToHtml(j.reply || '(no reply)'));
-            if(j.error === 'connection') showBanner('Adapter link lost — check the cable/Bluetooth and ignition.');
-          }
+    const started = await api.chatStart(text);
+    if(started && started.error) throw new Error(started.error);
+    // One path for desktop and Android: poll for tool events, then the reply.
+    for(;;){
+      const p = await api.poll();
+      for(const e of (p.events || [])){
+        if(e.type !== 'tool') continue;
+        if(!toolsLine){
+          toolsLine = document.createElement('div'); toolsLine.className='tools';
+          toolsLine.innerHTML = 'reading the car: ';
+          typing.closest('.row').before(toolsLine);
         }
+        const chip = document.createElement('span'); chip.className='chip';
+        chip.textContent = e.name; toolsLine.appendChild(chip); scroll();
       }
+      if(p.done){
+        const j = p.result || {};
+        typing.closest('.row').remove();
+        addBubble('assistant', mdToHtml(j.reply || '(no reply)'));
+        if(j.error === 'connection') showBanner('Adapter link lost — check the cable/Bluetooth and ignition.');
+        break;
+      }
+      await sleep(300);
     }
   }catch(err){
     typing.innerHTML = '⚠️ ' + esc(''+err);
@@ -303,7 +326,7 @@ textEl.addEventListener('input', () => {
 
 $('#newBtn').onclick = async () => {
   if(!confirm('Start a new session on this car?')) return;
-  await fetch('/api/new',{method:'POST'});
+  await api.newSession();
   log.querySelectorAll('.row, .tools').forEach(n=>n.remove());
   pending=[]; renderThumbs();
   const n=document.createElement('div'); n.className='note'; n.textContent='New session started.';
