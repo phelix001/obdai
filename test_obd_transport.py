@@ -214,6 +214,35 @@ def test_reader_open_failure_tcp_is_obd_error():
         obd_diagnose.Elm327Reader("tcp:127.0.0.1:1", None)
 
 
+def test_reopen_waits_for_the_adapter_to_actually_answer(monkeypatch):
+    """The Android BT bridge keeps the localhost TCP port up while Bluetooth is still
+    recovering, so a reconnect can 'succeed' yet read nothing. _reopen must require a
+    real response and keep retrying until the adapter answers — not proceed on silence."""
+    import obd_transport
+
+    class FakeTransport:
+        def reset_input(self): pass
+        def write(self, data): pass
+        def read_waiting(self): return b""
+        def close(self): pass
+
+    monkeypatch.setattr(obd_transport, "make_transport", lambda port, baud: FakeTransport())
+    monkeypatch.setattr(obd_diagnose.time, "sleep", lambda s: None)
+
+    reader = obd_diagnose.Elm327Reader("tcp:127.0.0.1:9", None)   # opens via the fake
+    ati = iter(["", "", "ELM327 v1.5\r>"])       # silent twice, then answers
+    def fake_cmd_once(command, timeout=2.0):
+        return next(ati) if command == "ATI" else ""
+    monkeypatch.setattr(reader, "_cmd_once", fake_cmd_once)
+
+    assert reader._reopen() is True              # only after the adapter answered
+
+    # and if it never answers, _reopen gives up (surfaced as a lost-connection error)
+    reader2 = obd_diagnose.Elm327Reader("tcp:127.0.0.1:9", None)
+    monkeypatch.setattr(reader2, "_cmd_once", lambda command, timeout=2.0: "")
+    assert reader2._reopen() is False
+
+
 def test_malformed_tcp_port_is_obd_error():
     with pytest.raises(obd_connect.ObdConnectionError):
         obd_diagnose.Elm327Reader("tcp:garbage", None)

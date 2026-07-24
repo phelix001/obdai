@@ -120,20 +120,37 @@ class Elm327Reader:
                 + f": {e}") from e
 
     def _reopen(self):
-        """Re-open the transport after a link drop. Returns True if the adapter is back."""
+        """Re-open the transport after a link drop, and prove the adapter is actually
+        answering before declaring success — not just that the socket opened.
+
+        This matters for the Android Bluetooth bridge: the localhost TCP port stays up
+        while the *Bluetooth* link is re-establishing, so a fresh connection can succeed
+        yet return nothing for a second or two. Re-initialising and requiring a real
+        response (an ELM banner or a '>' prompt) keeps us retrying with backoff until the
+        adapter genuinely comes back, instead of proceeding to read "No Data".
+        """
         try:
             self.transport.close()
         except Exception:
             pass
-        for delay in (0.5, 1.5):
+        for delay in (0.5, 1.0, 2.0, 3.0, 5.0):
             time.sleep(delay)
             try:
                 self.transport = obd_transport.make_transport(self.port, self.baud)
             except obd_transport.TransportError:
                 continue
-            for c in ("ATZ", "ATE0", "ATL0", "ATS0", "ATSP0"):
-                self._cmd_once(c, timeout=2.0)
-            return True
+            try:
+                for c in ("ATZ", "ATE0", "ATL0", "ATS0", "ATSP0"):
+                    self._cmd_once(c, timeout=2.0)
+                resp = self._cmd_once("ATI", timeout=2.0)     # does the adapter answer?
+                if ">" in resp or "ELM" in resp.upper():
+                    return True
+            except Exception:
+                pass                                          # link still flapping — back off, retry
+            try:
+                self.transport.close()
+            except Exception:
+                pass
         return False
 
     def _cmd_once(self, command, timeout=2.0):
