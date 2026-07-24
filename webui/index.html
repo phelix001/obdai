@@ -36,6 +36,25 @@
   .banner { padding: 8px 14px; font-size: 13px; text-align: center;
     background: rgba(224,86,75,.15); color: #f0a89f; border-bottom: 1px solid var(--err); }
 
+  #connect { position: fixed; inset: 0; z-index: 20; background: var(--bg);
+    display: flex; align-items: center; justify-content: center; padding: 24px; }
+  #connect[hidden] { display: none; }
+  .cwrap { width: 100%; max-width: 420px; }
+  .clogo { color: var(--accent); font-weight: 800; letter-spacing: 1px; font-size: 20px;
+    text-align: center; }
+  .ctitle { text-align: center; color: var(--dim); margin: 6px 0 22px; }
+  .cbtn { display: block; width: 100%; margin: 10px 0; padding: 15px 16px; font: inherit;
+    text-align: left; border-radius: 14px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); cursor: pointer; }
+  .cbtn:active { border-color: var(--accent2); }
+  .cbtn.ghost { background: transparent; color: var(--dim); }
+  .cbtn.dev { font-size: 14px; }
+  .cstatus { margin-top: 16px; text-align: center; color: var(--dim); font-size: 13px;
+    min-height: 20px; white-space: pre-wrap; }
+  .cstatus.err { color: var(--err); }
+  .cback { color: var(--accent); background: none; border: none; font: inherit;
+    cursor: pointer; margin-top: 12px; }
+
   #log { flex: 1; overflow-y: auto; padding: 16px 12px 6px; display: flex;
     flex-direction: column; gap: 12px; }
   .row { display: flex; }
@@ -101,6 +120,20 @@
   </header>
 
   <div id="banner" class="banner" hidden></div>
+
+  <div id="connect" hidden>
+    <div class="cwrap">
+      <div class="clogo">OBDAI</div>
+      <div class="ctitle">Connect to your car</div>
+      <div id="cbody">
+        <button class="cbtn" data-how="bluetooth">🔵  Bluetooth adapter</button>
+        <button class="cbtn" data-how="usb">🔌  USB adapter</button>
+        <button class="cbtn" data-how="wifi">📶  Wi-Fi adapter</button>
+        <button class="cbtn ghost" data-how="sim">▶  Simulator (demo, no car)</button>
+      </div>
+      <div id="cstatus" class="cstatus"></div>
+    </div>
+  </div>
 
   <div id="log">
     <div class="note" id="hello">Connecting…</div>
@@ -172,7 +205,16 @@ const api = {
     return NATIVE ? nativeCall('chat_start', {text}) : httpPost('/api/chat/start', {text}); },
   async poll(){
     return NATIVE ? nativeCall('poll') : httpPost('/api/chat/poll'); },
+  // Native-only: pick and open the adapter, then boot the Python session on it.
+  listBluetooth(){ return nativeCall('list_bluetooth'); },
+  listUsb(){ return nativeCall('list_usb'); },
+  connectBluetooth(mac){ return nativeCall('connect_bluetooth', {mac}); },
+  connectUsb(deviceId){ return nativeCall('connect_usb', {deviceId}); },
+  boot(opts){ return nativeCall('boot', Object.assign({provider:'claude'}, opts)); },
 };
+
+// yield once so a "Connecting…" paint lands before a blocking native call
+const paint = () => new Promise(r => setTimeout(r, 40));
 
 // Minimal, safe markdown for assistant replies: escape first (no HTML injection),
 // then add links / bold / italic / code / bullets. Links open in a new tab.
@@ -333,7 +375,90 @@ $('#newBtn').onclick = async () => {
   log.appendChild(n);
 };
 
-refreshStatus();
+// --------------------------------------------------------------------------
+// Connect screen (Android): pick an adapter, then boot the Python session on it.
+// On desktop the server already booted with its CLI flags, so this never shows.
+// --------------------------------------------------------------------------
+const connectEl = $('#connect'), cbody = $('#cbody'), cstatus = $('#cstatus');
+function cmsg(t, err){ cstatus.textContent = t || ''; cstatus.classList.toggle('err', !!err); }
+
+async function bootSession(opts, label){
+  cmsg('Connecting to ' + label + '…');
+  await paint();
+  let r;
+  try { r = api.isNative ? api.boot(opts) : {error: 'connect screen is Android-only'}; }
+  catch(e){ r = {error: '' + e}; }
+  if(r && r.error){ cmsg(r.error, true); showConnectMenu(); return; }
+  connectEl.hidden = true;
+  await refreshStatus();
+}
+
+function backButton(){
+  const b = document.createElement('button');
+  b.className = 'cback'; b.textContent = '‹ back';
+  b.onclick = showConnectMenu;
+  return b;
+}
+
+async function pickFromList(kind){
+  cmsg('Scanning…'); await paint();
+  const res = kind === 'bluetooth' ? api.listBluetooth() : api.listUsb();
+  if(res.error){ cmsg(res.error, true); return; }
+  const devices = res.devices || [];
+  cbody.innerHTML = '';
+  if(!devices.length){
+    cmsg(kind === 'bluetooth'
+      ? 'No paired Bluetooth adapters. Pair your ELM327 in Android Settings → Bluetooth first, then come back.'
+      : 'No USB serial adapter detected. Plug it into the phone (USB-OTG) and accept the permission prompt.', true);
+    cbody.appendChild(backButton());
+    return;
+  }
+  cmsg('');
+  for(const d of devices){
+    const b = document.createElement('button'); b.className = 'cbtn';
+    b.textContent = (kind === 'bluetooth' ? '🔵  ' : '🔌  ') + (d.name || d.mac || d.deviceId);
+    b.onclick = async () => {
+      cmsg('Opening ' + (d.name || 'adapter') + '…'); await paint();
+      const c = kind === 'bluetooth' ? api.connectBluetooth(d.mac) : api.connectUsb(d.deviceId);
+      if(c.error){ cmsg(c.error, true); return; }
+      await bootSession({port: c.endpoint, simulate: false}, d.name || 'adapter');
+    };
+    cbody.appendChild(b);
+  }
+  cbody.appendChild(backButton());
+}
+
+function showConnectMenu(){
+  cmsg('');
+  cbody.innerHTML =
+    '<button class="cbtn" data-how="bluetooth">🔵  Bluetooth adapter</button>' +
+    '<button class="cbtn" data-how="usb">🔌  USB adapter</button>' +
+    '<button class="cbtn" data-how="wifi">📶  Wi-Fi adapter</button>' +
+    '<button class="cbtn ghost" data-how="sim">▶  Simulator (demo, no car)</button>';
+  cbody.querySelectorAll('.cbtn').forEach(b => b.onclick = () => onHow(b.dataset.how));
+}
+
+async function onHow(how){
+  if(how === 'sim') return bootSession({simulate: true, sim_car: 'audi'}, 'the simulator');
+  if(how === 'bluetooth') return pickFromList('bluetooth');
+  if(how === 'usb') return pickFromList('usb');
+  if(how === 'wifi'){
+    const host = prompt('WiFi adapter address (host:port)', '192.168.0.10:35000');
+    if(!host) return;
+    return bootSession({port: 'tcp:' + host, simulate: false}, host);
+  }
+}
+
+async function init(){
+  const s = await api.status();
+  if(s.booted){ connectEl.hidden = true; await refreshStatus(); return; }
+  // Not booted yet → show the connect screen (Android). On desktop this path
+  // shouldn't happen, but if it does, offer the simulator as a safe default.
+  connectEl.hidden = false;
+  showConnectMenu();
+}
+
+init();
 </script>
 </body>
 </html>

@@ -57,8 +57,15 @@ def booted(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # obd_api handlers
 # --------------------------------------------------------------------------- #
+def test_status_before_boot_is_not_booted():
+    # Fresh module state (no adapter chosen yet) → the UI shows the connect screen.
+    obd_api.S.clear()
+    assert obd_api.status() == {"booted": False}
+
+
 def test_boot_identifies_the_car(booted):
     s = booted.status()
+    assert s["booted"] is True
     assert s["vehicle"] == "2010 Honda Accord 2.4"
     assert s["simulated"] is True and s["adapter"] == "simulated"
     assert s["busy"] is False

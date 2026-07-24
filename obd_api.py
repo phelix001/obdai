@@ -109,7 +109,10 @@ def _persist():
 # Read-only
 # --------------------------------------------------------------------------- #
 def status():
+    if not S.get("engine"):
+        return {"booted": False}          # no adapter chosen yet — show the connect screen
     return {
+        "booted": True,
         "vehicle": S["vehicle"],
         "vin": S["vin"],
         "provider": S["engine"].name,
